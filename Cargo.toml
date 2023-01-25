@@ -1,0 +1,22 @@
+[package]
+name = "site-shim"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ansi-to-html = "0.1.2"
+axum = { version = "0.6.3", features = ["http2", "macros"] }
+bb8 = "0.8.0"
+bb8-redis = "0.12.0"
+color-eyre = "0.6.2"
+eyre = "0.6.8"
+figment = { version = "0.10.8", features = ["env", "toml"] }
+futures = "0.3.25"
+moka = { version = "0.9.6", features = ["future"] }
+serde = { version = "1.0.152", features = ["derive"] }
+serde_json = "1.0.91"
+tokio = { version = "1.24.2", features = [
+    "macros",
+    "rt-multi-thread",
+    "signal",
+] }
