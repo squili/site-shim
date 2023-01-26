@@ -2,8 +2,11 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
     body::Body,
+    debug_handler,
+    extract::Query,
     http::{Request, StatusCode},
     response::{IntoResponse, Response},
+    routing::get,
     Router,
 };
 use bb8::Pool;
@@ -57,7 +60,10 @@ async fn main() -> eyre::Result<()> {
         }
     })());
 
-    let app = Router::new().fallback(move |r| handle(r, pool.clone(), cache.clone()));
+    let public_base: &'static str = Box::leak(config.public_base.clone().into_boxed_str());
+    let app = Router::new()
+        .route("/_/oembed.json", get(handle_oembed))
+        .fallback(move |r| handle(r, pool.clone(), cache.clone(), public_base));
 
     let (server_kill_tx, server_kill_rx) = oneshot::channel();
     let server = axum::Server::bind(&config.listen_on)
@@ -90,8 +96,9 @@ async fn handle(
     request: Request<Body>,
     pool: Pool<RedisConnectionManager>,
     cache: Cache<String, CacheEntry>,
+    public_base: &str,
 ) -> Result<impl IntoResponse, impl IntoResponse> {
-    handle_inner(request, pool, cache).await.map_err(|err| {
+    handle_inner(request, pool, cache, public_base).await.map_err(|err| {
         println!("handler error: {err:?}");
         let dbg = format!("{err:?}");
         let inner = ansi_to_html::convert(&dbg, true, true)
@@ -112,6 +119,7 @@ async fn handle_inner(
     request: Request<Body>,
     pool: Pool<RedisConnectionManager>,
     cache: Cache<String, CacheEntry>,
+    public_base: &str,
 ) -> eyre::Result<impl IntoResponse> {
     let path = request.uri().path().trim_matches('/');
 
@@ -142,17 +150,35 @@ async fn handle_inner(
         }
     };
 
+    let response = Response::builder().header("X-Cache-Status", cache_status);
+
     Ok(match entry {
-        CacheEntry::Empty => Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .header("X-Cache-Status", cache_status)
-            .body(Body::from("not found"))?,
-        CacheEntry::Asset((mime, body)) => Response::builder()
+        CacheEntry::Empty => response.status(StatusCode::NOT_FOUND).body(Body::from("not found"))?,
+        CacheEntry::Asset((mime, body)) => response
             .status(StatusCode::OK)
             .header("Content-Type", mime)
-            .header("X-Cache-Status", cache_status)
             .body(Body::from(body))?,
-        CacheEntry::Card(_) => todo!(),
+        CacheEntry::Card(card) => {
+            if request
+                .headers()
+                .get("User-Agent")
+                .and_then(|ua| ua.to_str().ok())
+                .map(|ua| ua.contains("Discordbot"))
+                .unwrap_or(false)
+            {
+                // request is from discord, render embed
+                response
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "text/html")
+                    .body(Body::from(card.build_embed_html(public_base)))?
+            } else {
+                // request is not from discord, redirect
+                response
+                    .status(StatusCode::PERMANENT_REDIRECT)
+                    .header("Location", card.url.clone())
+                    .body(Body::empty())?
+            }
+        }
     })
 }
 
@@ -160,6 +186,7 @@ async fn handle_inner(
 struct Config {
     pub database_url: String,
     pub listen_on: SocketAddr,
+    pub public_base: String,
 }
 
 #[derive(Clone)]
@@ -171,7 +198,53 @@ enum CacheEntry {
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Card {
-    pub name: String,
-    pub redirect: String,
-    pub icon: String,
+    pub title: String,
+    pub cta: String,
+    pub url: String,
+    pub color: String,
+}
+
+impl Card {
+    fn build_embed_html(&self, public_base: &str) -> String {
+        let qs = serde_urlencoded::to_string(OEmbedArgs {
+            provider_name: self.cta.clone(),
+            provider_url: self.url.clone(),
+            author_name: self.title.clone(),
+            author_url: self.url.clone(),
+        })
+        .unwrap();
+        format!(
+            r#"<!doctype html>
+<html>
+    <head>
+        <link rel="alternate" type="application/json+oembed" href="{public_base}/_/oembed.json?{qs}"/>
+        <meta name="theme-color" content="{}">
+        <script>location.href = "{url}"</script>
+    </head>
+    <body>
+        <noscript>Please navigate to <a href="{url}">{url}</a></noscript>
+    </body>
+</html>
+<!-- hi from site-embed -->"#,
+            self.color,
+            url = self.url,
+        )
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct OEmbedArgs {
+    provider_name: String,
+    provider_url: String,
+    author_name: String,
+    author_url: String,
+}
+
+#[debug_handler]
+async fn handle_oembed(Query(query): Query<OEmbedArgs>) -> impl IntoResponse {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("Content-Type", "application/json")
+        .body(Body::from(serde_json::to_string(&query).unwrap()))
+        .unwrap()
 }

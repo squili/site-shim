@@ -5,6 +5,7 @@ processes = []
 
 [env]
   SHIM_LISTEN_ON = "0.0.0.0:8080"
+  SHIM_PUBLIC_BASE = "https://mia.jetzt"
 
 [experimental]
   auto_rollback = true
