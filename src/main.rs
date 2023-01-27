@@ -1,3 +1,5 @@
+// See license info in LICENSE file
+
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{

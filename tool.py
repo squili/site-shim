@@ -1,3 +1,5 @@
+# See license info in LICENSE file
+
 import os
 import json
 import redis
